@@ -1,0 +1,238 @@
+---
+description: Canonical C11 implementation for head-toto — module layout, option parsing, read/write copy loop, headers, and exit behaviour
+globs: ["src/**/*.c", "include/**/*.h"]
+alwaysApply: false
+---
+
+# head-toto — Implementation (C11)
+
+## Module layout
+
+| Path | Role |
+|------|------|
+| `include/head_toto.h` | `HEAD_TOTO_VERSION_STRING`, `HEAD_TOTO_EXIT_*` enum, `HEAD_TOTO_DEFAULT_COUNT` (10), `struct head_toto_opts`, `head_toto_run()` declaration |
+| `include/head_toto_emit.h` | `head_toto_emit_error()`, `head_toto_emit_open_error()`, `head_toto_emit_read_error()`, `head_toto_emit_invalid_count()`, `head_toto_emit_invalid_option()`, `head_toto_emit_unrecognized_option()`, `head_toto_emit_missing_arg_short()`, `head_toto_emit_missing_arg_long()` |
+| `include/head_toto_cli.h` | `HEAD_TOTO_ARG_*` flag macros, `scan_meta_flags()`, `head_toto_parse_args()`, `print_help()`, `print_version()` |
+| `include/head_toto_count.h` | `HEAD_TOTO_COUNT_*` result enum, `head_toto_parse_count()` |
+| `include/head_toto_io.h` | `HEAD_TOTO_BUFSIZE`, `HEAD_TOTO_O_BINARY`, `head_toto_copy_lines()`, `head_toto_copy_bytes()`, `head_toto_write_header()` |
+| `src/main.c` | `main()` only — meta-flag scan, dispatch help/version, parse args, call `head_toto_run()` |
+| `src/head_toto_emit.c` | stderr diagnostics |
+| `src/head_toto_cli.c` | `argv_has_exact()`, meta-flag scan, option parser, help/version text |
+| `src/head_toto_count.c` | `head_toto_parse_count()` — NUM string → `uintmax_t` |
+| `src/head_toto_io.c` | `try_write_all()`, `try_read()`, copy loops, header writer |
+| `src/head_toto_run.c` | `head_toto_run()` — iterate FILE operands, open/close, header policy, exit status |
+
+Each `.c` file opens with a **chain-of-thought comment block** (responsibility,
+syscalls, heap usage, C standard). Preserve that pattern when adding files.
+
+## C standard
+
+**ISO C11** (`-std=c11`), `-D_POSIX_C_SOURCE=200809L` for POSIX.1-2008 where
+available (`open`, `read`, `write`, `close`, `STDIN_FILENO`, `ssize_t`, etc.).
+
+Platform selection is via Makefile define **`HEAD_TOTO_WIN32_IO`**
+(set when a compile probe for `<io.h>` + `_O_BINARY` succeeds).
+
+## Options struct (`head_toto.h`)
+
+```c
+enum head_toto_mode    { HEAD_TOTO_MODE_LINES, HEAD_TOTO_MODE_BYTES };
+enum head_toto_headers { HEAD_TOTO_HEADERS_AUTO, HEAD_TOTO_HEADERS_ALWAYS,
+                         HEAD_TOTO_HEADERS_NEVER };
+
+struct head_toto_opts {
+    enum head_toto_mode    mode;     /* default LINES */
+    uintmax_t              count;    /* default HEAD_TOTO_DEFAULT_COUNT */
+    enum head_toto_headers headers;  /* default AUTO */
+    char                   delim;    /* '\n', or '\0' with -z */
+};
+```
+
+## Argument handling (`src/main.c`, `src/head_toto_cli.c`)
+
+Flag macros in `head_toto_cli.h`:
+
+- `HEAD_TOTO_ARG_HELP` / `HEAD_TOTO_ARG_HELP_SHORT` → `--help` / `--h`
+- `HEAD_TOTO_ARG_VERSION` / `HEAD_TOTO_ARG_VERSION_SHORT` → `--version` / `--v`
+- `HEAD_TOTO_ARG_LINES_SHORT` / `HEAD_TOTO_ARG_LINES_LONG` → `-n` / `--lines`
+- `HEAD_TOTO_ARG_BYTES_SHORT` / `HEAD_TOTO_ARG_BYTES_LONG` → `-c` / `--bytes`
+- `HEAD_TOTO_ARG_QUIET_SHORT` / `HEAD_TOTO_ARG_QUIET_LONG` / `HEAD_TOTO_ARG_SILENT_LONG` → `-q` / `--quiet` / `--silent`
+- `HEAD_TOTO_ARG_VERBOSE_SHORT` / `HEAD_TOTO_ARG_VERBOSE_LONG` → `-v` / `--verbose`
+- `HEAD_TOTO_ARG_ZERO_SHORT` / `HEAD_TOTO_ARG_ZERO_LONG` → `-z` / `--zero-terminated`
+- `HEAD_TOTO_ARG_END_OF_OPTS` → `--`
+- `HEAD_TOTO_ARG_STDIN` → `-`
+
+`scan_meta_flags()` uses static **`argv_has_exact()`** (no hardcoded strings in the scan logic).
+
+1. Scan `argv[1…]` up to the first `--` for help flags → help + exit 0 (**wins** over version).
+2. Else scan for version flags → `head-toto <version>\n` + exit 0.
+3. Else `head_toto_parse_args(argc, argv, &opts, &nfiles)`; on usage error → exit 1
+   (diagnostic already emitted, nothing written to stdout).
+4. Else → `return head_toto_run(&opts, nfiles, argv + 1);`
+
+### `head_toto_parse_args()` rules
+
+- Walk `argv[1…]` left to right. Operands (anything not starting with `-`, plus
+  bare `-`) are **compacted in place** into `argv[1 … nfiles]`, preserving order.
+- After `--`, every remaining argument is an operand.
+- Long options: exact match only (no abbreviation). `--lines=NUM` / `--bytes=NUM`
+  take the value after `=`; `--lines` / `--bytes` take the next `argv` element.
+  `--quiet`, `--silent`, `--verbose`, `--zero-terminated` take no value.
+- Short options may be clustered. `q`, `v`, `z` are flags; `n` and `c` consume the
+  rest of the token (`-n5`, `-qn5`) or, if empty, the next `argv` element.
+- `-n` / `-c` set `mode` and `count` via `head_toto_parse_count()`; last one wins.
+- `-q` sets `headers = NEVER`, `-v` sets `headers = ALWAYS`; last one wins.
+- Missing value → `head_toto_emit_missing_arg_short(c)` or `_long(name)`.
+- Unknown short char → `head_toto_emit_invalid_option(c)`.
+- Unknown `--xxx` → `head_toto_emit_unrecognized_option(arg)`.
+- A token like `-5` is an invalid option (`'5'`), not the obsolete count syntax.
+
+Usage error formats (both lines to **stderr**):
+
+```
+head-toto: invalid option -- 'x'
+Try 'head-toto --help' for more information.
+
+head-toto: unrecognized option '--foo'
+Try 'head-toto --help' for more information.
+
+head-toto: option requires an argument -- 'n'
+Try 'head-toto --help' for more information.
+
+head-toto: option '--lines' requires an argument
+Try 'head-toto --help' for more information.
+```
+
+## Count parsing (`head_toto_parse_count`)
+
+```c
+enum head_toto_count_result { HEAD_TOTO_COUNT_OK, HEAD_TOTO_COUNT_INVALID };
+enum head_toto_count_result head_toto_parse_count(const char *s, uintmax_t *out);
+```
+
+- **Precondition:** `s != NULL`, `out != NULL`.
+- Accept one or more ASCII digits `0-9` only. Empty string, leading `+`/`-`,
+  whitespace, or any suffix → `HEAD_TOTO_COUNT_INVALID` (`*out` untouched).
+- Overflow past `UINTMAX_MAX` → clamp to `UINTMAX_MAX`, return `OK`
+  (matches GNU treating huge counts as "everything").
+- Caller emits `head-toto: invalid number of lines: '<arg>'` (or `bytes`).
+
+## File loop (`head_toto_run`)
+
+```
+if nfiles == 0 → process "-" once
+print_headers = ALWAYS, or (AUTO and nfiles > 1)
+first = 1; status = EXIT_OK
+for each name:
+    fd = (name is "-") ? STDIN_FILENO : open(name, O_RDONLY | HEAD_TOTO_O_BINARY)
+    if fd < 0 → emit_open_error(name), status = EXIT_ERR, continue
+    if print_headers → head_toto_write_header(display(name), first); first = 0
+    rc = (mode == LINES) ? copy_lines(fd, STDOUT_FILENO, count, delim)
+                         : copy_bytes(fd, STDOUT_FILENO, count)
+    if rc != 0 → emit_read_error(name), status = EXIT_ERR
+    if fd != STDIN_FILENO → close(fd)
+return status
+```
+
+- `display(name)` is `"standard input"` for `-`, otherwise `name` verbatim.
+- A FILE that fails to open prints **no header** and does not clear `first`.
+- `count == 0` still opens the FILE (errors are reported) but never calls `read()`.
+- On Linux, opening a directory succeeds and the first `read()` fails with
+  `EISDIR` → `error reading` path; do not special-case directories.
+
+## Copy loops (`head_toto_io.c`)
+
+```c
+int head_toto_copy_lines(int fd_in, int fd_out, uintmax_t n, char delim);
+int head_toto_copy_bytes(int fd_in, int fd_out, uintmax_t n);
+```
+
+- **Return:** `0` on success (N units copied or EOF reached), `-1` on read
+  error with `errno` preserved for the caller's diagnostic.
+- Both use one stack `char buf[HEAD_TOTO_BUFSIZE]` and `try_read()`.
+- **Bytes:** request `min(n_remaining, HEAD_TOTO_BUFSIZE)`; write what was read;
+  stop at `n` bytes or EOF.
+- **Lines:** for each chunk, walk with `memchr(p, delim, left)` decrementing `n`
+  per delimiter; when `n` hits 0, write the chunk prefix through that delimiter
+  and stop. Otherwise write the whole chunk and keep reading.
+- A final line without a trailing delimiter is copied as-is; never append one.
+- Do not read past the needed data more than one buffer's worth; never `lseek()`
+  back (stdin may be a pipe).
+
+## Headers (`head_toto_write_header`)
+
+```c
+void head_toto_write_header(const char *display_name, int first);
+```
+
+- Writes `"\n"` first unless `first`, then `"==> "`, `display_name`, `" <==\n"`.
+- Each piece goes through `try_write_all(STDOUT_FILENO, …)`; no stdio.
+
+## Windows binary mode (`HEAD_TOTO_WIN32_IO`)
+
+Defined in `head_toto_io.h` so `head_toto_run.c` and tests share it:
+
+```c
+#ifdef HEAD_TOTO_WIN32_IO
+#include <io.h>
+#include <fcntl.h>
+#define HEAD_TOTO_O_BINARY _O_BINARY
+#else
+#define HEAD_TOTO_O_BINARY 0
+#endif
+```
+
+- At the start of `head_toto_run()`, call `_setmode(STDIN_FILENO, _O_BINARY)`
+  and `_setmode(STDOUT_FILENO, _O_BINARY)` so `-c` counts and CRLF bytes pass
+  through unchanged.
+- Every `open()` of a FILE operand ORs in `HEAD_TOTO_O_BINARY`.
+
+## Output
+
+- File data and headers: raw `write()` via `try_write_all()` only — no
+  `printf` / `puts` / `fwrite` on this path.
+- `--help` and `--version` text may use `printf` / `fputs` to stdout
+  (those paths never touch file data).
+
+## Exit codes
+
+| Code | Constant | Meaning |
+|------|----------|---------|
+| `0` | `HEAD_TOTO_EXIT_OK` | All FILEs copied; or `--help` / `--version` |
+| `1` | `HEAD_TOTO_EXIT_ERR` | Usage error, any open/read failure, write failure |
+
+## Error messages
+
+All diagnostics on **stderr**:
+
+- System error: `head-toto: <context>: <strerror(errno)>` (`head_toto_emit_error`)
+- Open failure: `head-toto: cannot open '<name>' for reading: <strerror(errno)>`
+- Read failure: `head-toto: error reading '<name>': <strerror(errno)>`
+- Bad NUM: `head-toto: invalid number of lines: '<arg>'` /
+  `head-toto: invalid number of bytes: '<arg>'` (no hint line)
+- Option errors: see formats above, each followed by the hint line
+
+`<name>` uses the display name (`standard input` for `-`).
+Never print errors to stdout.
+
+## `try_write_all()` contract
+
+Static helper in `head_toto_io.c`:
+
+- **Precondition:** `buf != NULL`, `len > 0`
+- **Postcondition:** all `len` bytes written, or process exited
+- Loops on short writes, advancing the pointer by the returned byte count
+- On `EINTR`: retry immediately
+- On other errors: `head_toto_emit_error("write")`, `exit(HEAD_TOTO_EXIT_ERR)`
+
+## `try_read()` contract
+
+Static helper in `head_toto_io.c`:
+
+- **Precondition:** `buf != NULL`, `len > 0`
+- **Return:** bytes read (`> 0`), `0` on EOF, `-1` on error with `errno` set
+- On `EINTR`: retry immediately
+
+## Naming
+
+Public run entry point: **`head_toto_run()`** (not bare `run`).

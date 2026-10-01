@@ -1,0 +1,185 @@
+---
+description: C toolchain, build system, and directory structure for head-toto
+globs: ["Makefile", "*.c", "*.h", "src/**/*.c", "include/**/*.h", "tests/**/*.c"]
+alwaysApply: false
+---
+
+# Toolchain & Project Structure
+
+## Language
+
+**C11** (`-std=c11`). **No C++.**
+
+## Compiler flags (from `Makefile`)
+
+```
+-std=c11 -Wall -Wextra -Wpedantic -Werror
+-D_POSIX_C_SOURCE=200809L
+-Iinclude
+-O2          # release (CFLAGS)
+```
+
+When the `_O_BINARY` probe succeeds, the Makefile also adds:
+
+```
+-DHEAD_TOTO_WIN32_IO   # _setmode() + _O_BINARY on stdin/stdout/opened FILEs
+```
+
+No extra libraries are linked on any platform (`LDFLAGS` stays empty).
+
+Debug target uses `CFLAGS_DEBUG`: `-g -O1 -fsanitize=address,undefined -fno-omit-frame-pointer`.
+
+## Artefact layout
+
+All build outputs live under **`build/`**; never write binaries at the repo root
+or into `tests/`.
+
+| Artefact | Path |
+|----------|------|
+| Release binary | `build/head-toto` (`.exe` on Windows) |
+| Debug binary | `build/head-toto-debug` |
+| Main objects | `build/*.o` (from `src/*.c`) |
+| Test binary | `build/tests/test_core` |
+| Test objects | `build/tests/*.o` (from `tests/*.c`) |
+| Test fixtures | `build/tests/fixture_*.tmp` (created and removed by tests) |
+
+`build/.gitkeep` and `build/tests/.gitkeep` keep the directories in git when empty.
+`make clean` removes objects, binaries, and fixtures but leaves the `.gitkeep` files.
+
+## Compiler selection
+
+`Makefile` picks **gcc** if available, else **clang**:
+
+```makefile
+CC := $(shell command -v gcc >/dev/null 2>&1 && echo gcc || echo clang)
+```
+
+On **`OS=Windows_NT`**, if `C:/msys64/ucrt64/bin/gcc` exists, it becomes `CC`
+(so Git Bash does not use a minimal or unrelated MinGW toolchain).
+
+## Platform probe (`_O_BINARY`)
+
+Before compiling, the Makefile preprocesses:
+
+```c
+#include <io.h>
+#include <fcntl.h>
+#ifndef _O_BINARY
+#error no _O_BINARY
+#endif
+```
+
+- **Probe fails** → plain POSIX I/O in `head_toto_io.c` / `head_toto_run.c`.
+- **Probe succeeds** → `-DHEAD_TOTO_WIN32_IO`; stdin/stdout switched to binary
+  mode and FILEs opened with `_O_BINARY`, so byte counts and CRLF are preserved.
+
+Typical outcomes:
+
+| Environment | Probe | I/O mode |
+|-------------|-------|----------|
+| Linux / WSL | fail (no `<io.h>`) | POSIX `open`/`read`/`write` |
+| MSYS2 UCRT64 gcc | success | POSIX calls + binary mode |
+| Git Bash + UCRT64 gcc | success | POSIX calls + binary mode |
+| Cygwin / MSYS runtime gcc | fail* | POSIX `open`/`read`/`write` |
+
+\*The Cygwin/MSYS runtimes are already binary by default; the plain POSIX path is correct there.
+
+## Build system
+
+**GNU Make** at repo root. Object files are compiled into `build/` and
+`build/tests/`, then linked.
+
+| Target | Output |
+|--------|--------|
+| `make` / `all` | `build/head-toto` |
+| `make debug` | `build/head-toto-debug` |
+| `make test` | builds + runs `build/tests/test_core` |
+| `make clean` | removes objects/binaries/fixtures under `build/` (keeps `.gitkeep`) |
+| `make install` | `install -m 755 build/head-toto /usr/local/bin` (Linux/macOS) |
+
+**Main sources:** `src/main.c`, `src/head_toto_emit.c`, `src/head_toto_cli.c`,
+`src/head_toto_count.c`, `src/head_toto_io.c`, `src/head_toto_run.c`
+
+**Test sources:** `tests/test_runner.c`, `tests/test_count_parse.c`,
+`tests/test_copy_lines.c`, `tests/test_copy_bytes.c`
+
+## Dependencies
+
+- **All builds:** libc only (`unistd.h`, `fcntl.h`, `string.h`, `stdint.h`, `errno.h`, etc.).
+- **Windows binary-mode builds:** libc + `<io.h>` (`_setmode`) — still no extra link libraries.
+
+## Directory layout
+
+```
+head-toto/
+├── LICENSE.txt          — GNU GPL v2 (full text)
+├── c_version.txt        — C11 / compiler / toolchain documentation
+├── .cursor/rules/
+├── .editorconfig
+├── .gitattributes
+├── .gitignore
+├── Makefile
+├── README.md
+├── build/
+│   ├── .gitkeep
+│   └── tests/
+│       └── .gitkeep
+├── include/
+│   ├── head_toto.h
+│   ├── head_toto_emit.h
+│   ├── head_toto_cli.h
+│   ├── head_toto_count.h
+│   └── head_toto_io.h
+├── src/
+│   ├── main.c
+│   ├── head_toto_emit.c
+│   ├── head_toto_cli.c
+│   ├── head_toto_count.c
+│   ├── head_toto_io.c
+│   └── head_toto_run.c
+└── tests/
+    ├── test_runner.c
+    ├── test_count_parse.c / .h
+    ├── test_copy_lines.c / .h
+    └── test_copy_bytes.c / .h
+```
+
+Build artefacts under `build/` (except `.gitkeep` files) are gitignored.
+
+## Building on Linux / WSL
+
+```sh
+make clean && make && make test
+./build/head-toto README.md
+```
+
+## Building on Windows
+
+**Recommended:** MSYS2 **UCRT64** or **Git Bash** with UCRT64 `gcc` on `PATH`:
+
+```sh
+pacman -S make mingw-w64-ucrt-x86_64-gcc   # once
+cd /path/to/head-toto
+make clean && make && make test
+./build/head-toto README.md
+```
+
+Produces a **native Windows executable** (`build/head-toto` or
+`build/head-toto.exe`). Runs in UCRT64, Git Bash, cmd, and PowerShell.
+
+### Git Bash caveat
+
+Put **`/c/msys64/ucrt64/bin` early on `PATH`** (before Git's embedded
+MinGW). Otherwise `make` may pick a different compiler whose probe result or
+headers differ, or fail opaquely. Prefer:
+
+```bash
+PATH="/c/msys64/ucrt64/bin:$PATH" make
+```
+
+## Linking notes
+
+- `main()` lives only in `src/main.c`.
+- Tests link `head_toto_count.o`, `head_toto_io.o`, and `head_toto_emit.o`;
+  they **do not** link `main.o`, `head_toto_cli.o`, or `head_toto_run.o`.
+- Debug binary is compiled from sources with `CFLAGS_DEBUG` (not reused release `.o` files).
