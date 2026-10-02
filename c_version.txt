@@ -1,0 +1,41 @@
+head-toto — C language and toolchain
+====================================
+
+C standard
+----------
+ISO C11 (-std=c11). Not compiled as C++.
+POSIX.1-2008 interfaces are requested with -D_POSIX_C_SOURCE=200809L
+(open, read, write, close, STDIN_FILENO, ssize_t).
+
+Compiler flags (Makefile)
+-------------------------
+Release (CFLAGS):
+    -std=c11 -Wall -Wextra -Wpedantic -Werror
+    -D_POSIX_C_SOURCE=200809L -Iinclude -O2
+
+Debug (CFLAGS_DEBUG):
+    same warnings/defines, plus
+    -g -O1 -fsanitize=address,undefined -fno-omit-frame-pointer
+    (on Windows binary-mode builds the -fsanitize flags are dropped:
+    UCRT64 gcc has no AddressSanitizer runtime)
+
+Platform define:
+    -DHEAD_TOTO_WIN32_IO   added when the Makefile probe finds <io.h>
+                           with _O_BINARY (native Windows CRT). It switches
+                           stdin, stdout, and opened FILEs to binary mode so
+                           byte counts and CRLF pass through unchanged.
+
+Libraries: libc only on every platform (LDFLAGS is empty).
+
+Compiler selection
+------------------
+gcc if available, else clang. On Windows (OS=Windows_NT), the MSYS2 UCRT64
+gcc at C:/msys64/ucrt64/bin/gcc is used when present.
+
+Toolchains used during development
+----------------------------------
+Windows:  gcc 15.2.0 (Rev13, Built by MSYS2 project), UCRT64
+          GNU Make 4.4.1, driven from Git Bash
+          probe result: HEAD_TOTO_WIN32_IO defined
+Linux:    gcc 13.3.0 (Ubuntu 24.04, WSL)
+          probe result: plain POSIX I/O
