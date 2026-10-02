@@ -28,6 +28,8 @@ When the `_O_BINARY` probe succeeds, the Makefile also adds:
 No extra libraries are linked on any platform (`LDFLAGS` stays empty).
 
 Debug target uses `CFLAGS_DEBUG`: `-g -O1 -fsanitize=address,undefined -fno-omit-frame-pointer`.
+When `HEAD_TOTO_WIN32_IO` is set, `-fsanitize=…` is dropped (UCRT64 gcc ships no
+AddressSanitizer runtime), leaving `-g -O1 -fno-omit-frame-pointer`.
 
 ## Artefact layout
 
