@@ -31,6 +31,8 @@ static int argv_has_exact(int argc, char *argv[], const char *flag)
     int i;
 
     for (i = 1; i < argc; i++) {
+        // If the argument is the end of options "--" then return 0
+        // because it takes precedence over help or version
         if (strcmp(argv[i], HEAD_TOTO_ARG_END_OF_OPTS) == 0) {
             return 0;
         }
