@@ -62,12 +62,15 @@ static int apply_count(struct head_toto_opts *opts, enum head_toto_mode mode,
                        const char *value)
 {
     uintmax_t count;
-
-    if (head_toto_parse_count(value, &count) != HEAD_TOTO_COUNT_OK) {
+    enum head_toto_count_result result;
+    result = head_toto_parse_count(value, &count);
+    if (result != HEAD_TOTO_COUNT_OK) {
+        // If the count is invalid then emit an invalid count error
         head_toto_emit_invalid_count(
             mode == HEAD_TOTO_MODE_LINES ? "lines" : "bytes", value);
         return -1;
     }
+    // If the count is valid then set the mode and count
     opts->mode = mode;
     opts->count = count;
     return 0;
@@ -98,9 +101,11 @@ static int parse_long(int argc, char *argv[], int *i,
                       struct head_toto_opts *opts)
 {
     const char *arg = argv[*i];
-    const char *rest;
-    const char *name;
-    enum head_toto_mode mode;
+    const char *lines_rest;
+    const char *bytes_rest;
+    const char *rest = NULL;
+    const char *name = NULL;
+    enum head_toto_mode mode = HEAD_TOTO_MODE_LINES;
 
     // Check if the long option is a quiet flag --quiet or --silent
     if (strcmp(arg, HEAD_TOTO_ARG_QUIET_LONG) == 0
@@ -121,26 +126,38 @@ static int parse_long(int argc, char *argv[], int *i,
         return 0;
     }
 
-    if ((rest = match_long_with_value(arg, HEAD_TOTO_ARG_LINES_LONG))
-        != NULL) {
+    // Check if the long option is a lines flag --lines or --lines=NUM
+    lines_rest = match_long_with_value(arg, HEAD_TOTO_ARG_LINES_LONG);
+    if (lines_rest != NULL) {
+        rest = lines_rest;
         name = HEAD_TOTO_ARG_LINES_LONG;
         mode = HEAD_TOTO_MODE_LINES;
-    } else if ((rest = match_long_with_value(arg, HEAD_TOTO_ARG_BYTES_LONG))
-               != NULL) {
+    } 
+    
+    // Check if the long option is a bytes flag --bytes or --bytes=NUM
+    bytes_rest = match_long_with_value(arg, HEAD_TOTO_ARG_BYTES_LONG);
+    if (bytes_rest != NULL) {
+        rest = bytes_rest;
         name = HEAD_TOTO_ARG_BYTES_LONG;
         mode = HEAD_TOTO_MODE_BYTES;
-    } else {
+    } 
+    
+    // If the long option is not a valid flag then emit an invalid option error
+    if (name == NULL) {
         head_toto_emit_unrecognized_option(arg);
         return -1;
     }
 
+    // If the long option has a value as the same string then apply the count
     if (*rest == '=') {
         return apply_count(opts, mode, rest + 1);
     }
+    // If the long option does not have a next argument to use as value then emit a missing argument error
     if (*i + 1 >= argc) {
         head_toto_emit_missing_arg_long(name);
         return -1;
     }
+    // If the long option has a next argument to use as value then apply the count
     *i += 1;
     return apply_count(opts, mode, argv[*i]);
 }
@@ -200,14 +217,15 @@ static int parse_short(int argc, char *argv[], int *i,
 
         // If the mode is valid then apply the count
         if (p[1] != '\0') {
-            // If the short flag has a value then apply the count
+            // If the short flag has a value as the same string then apply the count
             return apply_count(opts, mode, p + 1);
         }
-        // If the short flag does not have a value then emit a missing argument error
+        // If the short flag does not have a next argument to use as value then emit a missing argument error
         if (*i + 1 >= argc) {
             head_toto_emit_missing_arg_short(c);
             return -1;
         }
+        // If the short flag has a next argument to use as value then apply the count
         *i += 1;
         return apply_count(opts, mode, argv[*i]);
     }
