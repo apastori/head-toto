@@ -102,15 +102,20 @@ static int parse_long(int argc, char *argv[], int *i,
     const char *name;
     enum head_toto_mode mode;
 
+    // Check if the long option is a quiet flag --quiet or --silent
     if (strcmp(arg, HEAD_TOTO_ARG_QUIET_LONG) == 0
         || strcmp(arg, HEAD_TOTO_ARG_SILENT_LONG) == 0) {
         opts->headers = HEAD_TOTO_HEADERS_NEVER;
         return 0;
     }
+
+    // Check if the long option is a verbose flag --verbose
     if (strcmp(arg, HEAD_TOTO_ARG_VERBOSE_LONG) == 0) {
         opts->headers = HEAD_TOTO_HEADERS_ALWAYS;
         return 0;
     }
+
+    // Check if the long option is a zero flag --zero-terminated
     if (strcmp(arg, HEAD_TOTO_ARG_ZERO_LONG) == 0) {
         opts->delim = '\0';
         return 0;
@@ -148,37 +153,57 @@ static int parse_long(int argc, char *argv[], int *i,
 static int parse_short(int argc, char *argv[], int *i,
                        struct head_toto_opts *opts)
 {
+    // skip the '-' in the short flag option
     const char *p = argv[*i] + 1;
 
+    // Iterate through the short flag option until string terminator '\0' is reached
     for (; *p != '\0'; p++) {
         char c = *p;
-        enum head_toto_mode mode;
+        enum head_toto_mode mode = HEAD_TOTO_MODE_LINES;
+        int set_mode = 0;
 
+        // Check if the short flag is a quiet flag -q
         if (c == HEAD_TOTO_ARG_QUIET_SHORT[1]) {
             opts->headers = HEAD_TOTO_HEADERS_NEVER;
             continue;
         }
+
+        // Check if the short flag is a verbose flag -v
         if (c == HEAD_TOTO_ARG_VERBOSE_SHORT[1]) {
             opts->headers = HEAD_TOTO_HEADERS_ALWAYS;
             continue;
         }
+
+        // Check if the short flag is a zero flag -z
         if (c == HEAD_TOTO_ARG_ZERO_SHORT[1]) {
             opts->delim = '\0';
             continue;
         }
 
+        // Check if the short flag is a lines flag -n
         if (c == HEAD_TOTO_ARG_LINES_SHORT[1]) {
             mode = HEAD_TOTO_MODE_LINES;
-        } else if (c == HEAD_TOTO_ARG_BYTES_SHORT[1]) {
+            set_mode = 1;
+        } 
+        
+        // Check if the short flag is a bytes flag -c
+        if (c == HEAD_TOTO_ARG_BYTES_SHORT[1]) {
             mode = HEAD_TOTO_MODE_BYTES;
-        } else {
+            set_mode = 1;
+        } 
+        
+        // If the short flag is not a valid flag then emit an invalid option error
+        if (!set_mode) {
             head_toto_emit_invalid_option(c);
             return -1;
         }
 
+        // If the mode is valid then apply the count
         if (p[1] != '\0') {
+            // If the short flag has a value then apply the count
             return apply_count(opts, mode, p + 1);
         }
+        // If the short flag does not have a value then emit a missing argument error
         if (*i + 1 >= argc) {
             head_toto_emit_missing_arg_short(c);
             return -1;
@@ -190,7 +215,7 @@ static int parse_short(int argc, char *argv[], int *i,
     return 0;
 }
 
-void init_opts(struct head_toto_opts *opts)
+static void init_opts(struct head_toto_opts *opts)
 {
     opts->mode = HEAD_TOTO_MODE_LINES;
     opts->count = HEAD_TOTO_DEFAULT_COUNT;
@@ -209,24 +234,33 @@ int head_toto_parse_args(int argc, char *argv[], struct head_toto_opts *opts,
 
     for (i = 1; i < argc; i++) {
         char *arg = argv[i];
-        int rc;
+        int return_code = 0;
 
+        // if arg does matches exactly "-" or does not start with '-'
+        // or the end of options was reached, then it is a file operand
         if (only_operands || arg[0] != '-'
             || strcmp(arg, HEAD_TOTO_ARG_STDIN) == 0) {
             argv[out++] = arg;
             continue;
         }
+
+        // if arg is the end of options "--" then set only_operands to 1
         if (strcmp(arg, HEAD_TOTO_ARG_END_OF_OPTS) == 0) {
             only_operands = 1;
             continue;
         }
 
-        if (arg[1] == '-') {
-            rc = parse_long(argc, argv, &i, opts);
-        } else {
-            rc = parse_short(argc, argv, &i, opts);
+        // if arg is a short option then parse it as a short option
+        if (arg[0] == '-' && arg[1] != '-' && arg[1] != '\0') {
+            return_code = parse_short(argc, argv, &i, opts);
+        } 
+        
+        // if arg is a long option then parse it as a long option
+        if (arg[0] == '-' && arg[1] == '-' && arg[2] != '\0') {
+            return_code = parse_long(argc, argv, &i, opts);
         }
-        if (rc != 0) {
+
+        if (return_code != 0) {
             return -1;
         }
     }

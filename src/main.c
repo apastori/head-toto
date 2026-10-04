@@ -17,16 +17,18 @@ int main(int argc, char *argv[])
 {
     struct head_toto_opts opts;
     int nfiles;
+    enum head_toto_meta meta_flags;
 
-    switch (scan_meta_flags(argc, argv)) {
-        case HEAD_TOTO_META_HELP:
-            print_help();
-            return HEAD_TOTO_EXIT_OK;
-        case HEAD_TOTO_META_VERSION:
-            print_version();
-            return HEAD_TOTO_EXIT_OK;
-        case HEAD_TOTO_META_NONE:
-            break;
+    meta_flags = scan_meta_flags(argc, argv);
+
+    if (meta_flags == HEAD_TOTO_META_HELP) {
+        print_help();
+        return HEAD_TOTO_EXIT_OK;
+    }
+
+    if (meta_flags == HEAD_TOTO_META_VERSION) {
+        print_version();
+        return HEAD_TOTO_EXIT_OK;
     }
 
     if (head_toto_parse_args(argc, argv, &opts, &nfiles) != 0) {
