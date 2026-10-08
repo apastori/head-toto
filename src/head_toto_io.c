@@ -76,32 +76,43 @@ int head_toto_copy_lines(int fd_in, int fd_out, uintmax_t n, char delim)
         const char *p = buf;
         size_t left;
 
+        /* If there was an error, return -1 */
         if (got < 0) {
             return -1;
         }
+
+        /* If there was no data left to read EOF, break */
         if (got == 0) {
             break;
         }
 
         len = (size_t)got;
         left = len;
+        /* While there is data left to read */
         while (left > 0) {
+            /* Find the next delimiter */
             const char *hit = memchr(p, delim, left);
 
+            /* If there was no delimiter found, break */
             if (hit == NULL) {
                 break;
             }
+            /* If the delimiter was found, subtract the length of the delimiter and the delimiter itself */
             left -= (size_t)(hit - p) + 1;
             p = hit + 1;
+            /* If the count is 0, break */
             if (--n == 0) {
+                /* Set the length to the length of the buffer minus the position of the delimiter */
                 len = (size_t)(p - buf);
                 break;
             }
         }
 
+        /* Write the data to the output file */
         try_write_all(fd_out, buf, len);
     }
 
+    /* Return 0 if successful */
     return 0;
 }
 
@@ -113,17 +124,21 @@ int head_toto_copy_bytes(int fd_in, int fd_out, uintmax_t n)
         size_t want = n < sizeof buf ? (size_t)n : sizeof buf;
         ssize_t got = try_read(fd_in, buf, want);
 
+        /* If there was an error, return -1 */
         if (got < 0) {
             return -1;
         }
+        /* If there was no data left to read EOF, break */
         if (got == 0) {
             break;
         }
 
+        /* Write the data to the Standard Output */
         try_write_all(fd_out, buf, (size_t)got);
         n -= (uintmax_t)got;
     }
 
+    /* Return 0 if successful */
     return 0;
 }
 

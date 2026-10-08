@@ -74,6 +74,7 @@ int head_toto_run(const struct head_toto_opts *opts, int nfiles,
                 rc = head_toto_copy_bytes(fd, STDOUT_FILENO, opts->count);
             }
         }
+        
         if (rc != 0) {
             head_toto_emit_read_error(shown);
             status = HEAD_TOTO_EXIT_ERR;
