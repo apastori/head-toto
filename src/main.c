@@ -2,9 +2,10 @@
  * main.c — entry point for head-toto.
  *
  * Chain of thought:
- *   - Responsibility: dispatch only. Meta flags (--help / --version) are
- *     resolved first so they win over any usage error; then options are
- *     parsed and the FILE loop in head_toto_run() does the work.
+ *   - Responsibility: dispatch only. head_toto_parse_args() handles the
+ *     options left to right and reports --help / --version as soon as it
+ *     reaches them (as GNU head does); the FILE loop in head_toto_run()
+ *     does the work.
  *   - Syscalls: none directly.
  *   - Heap: none.
  *   - Standard: ISO C11.
@@ -17,21 +18,21 @@ int main(int argc, char *argv[])
 {
     struct head_toto_opts opts;
     int nfiles;
-    enum head_toto_meta meta_flags;
+    enum head_toto_parse_result result;
 
-    meta_flags = scan_meta_flags(argc, argv);
+    result = head_toto_parse_args(argc, argv, &opts, &nfiles);
 
-    if (meta_flags == HEAD_TOTO_META_HELP) {
+    if (result == HEAD_TOTO_PARSE_HELP) {
         print_help();
         return HEAD_TOTO_EXIT_OK;
     }
 
-    if (meta_flags == HEAD_TOTO_META_VERSION) {
+    if (result == HEAD_TOTO_PARSE_VERSION) {
         print_version();
         return HEAD_TOTO_EXIT_OK;
     }
 
-    if (head_toto_parse_args(argc, argv, &opts, &nfiles) != 0) {
+    if (result == HEAD_TOTO_PARSE_ERROR) {
         return HEAD_TOTO_EXIT_ERR;
     }
 
