@@ -5,7 +5,7 @@ C standard
 ----------
 ISO C11 (-std=c11). Not compiled as C++.
 POSIX.1-2008 interfaces are requested with -D_POSIX_C_SOURCE=200809L
-(open, read, write, close, STDIN_FILENO, ssize_t).
+(open, read, write, close, lseek, fstat, STDIN_FILENO, ssize_t, off_t).
 
 Compiler flags (Makefile)
 -------------------------
