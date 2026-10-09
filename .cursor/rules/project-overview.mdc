@@ -13,12 +13,21 @@ It copies the **first part of each input** to stdout — by default the first
 **10 lines** of each FILE — then exits. With no FILE, or when FILE is `-`, it
 reads standard input. It does not loop or follow files.
 
+Versions: **v1.0.0** (git tag) is the POSIX-style subset (plain decimal NUM,
+no negative counts, no suffixes, exact long options). 
+
+**v2.0.0** (current) is
+GNU-compatible: it matches GNU coreutils `head` 9.4 for every supported option,
+including the GNU extensions below.
+
 Input selection and counting:
 
 | Mode | Option | Unit counted |
 |------|--------|--------------|
-| Lines (default) | `-n NUM` / `--lines=NUM` | lines terminated by `\n` (or `\0` with `-z`) |
-| Bytes | `-c NUM` / `--bytes=NUM` | raw bytes |
+| Lines (default) | `-n [-]NUM` / `--lines=[-]NUM` | lines terminated by `\n` (or `\0` with `-z`) |
+| Bytes | `-c [-]NUM` / `--bytes=[-]NUM` | raw bytes |
+
+A leading `-` on NUM means "all but the last NUM lines/bytes".
 
 When more than one FILE is given, each is preceded by a header
 `==> NAME <==` (stdin is shown as `standard input`), with a blank line
@@ -43,35 +52,53 @@ Binaries are **not portable** across operating systems — build separately on L
 
 ## Scope — Keep It Minimal
 
-Supporting behaviour:
+Supporting behaviour (all as in GNU `head` 9.4):
 
-- Built-in `--help` / `--h` and `--version` / `--v` (detected anywhere in `argv`
-  before `--`; help wins if both appear)
+- `--help` / `--version`, processed **in order** with the other options: the
+  first one reached wins, and an earlier usage error is reported instead
 - `-n NUM`, `-nNUM`, `--lines=NUM`, `--lines NUM` → first NUM lines (default 10)
 - `-c NUM`, `-cNUM`, `--bytes=NUM`, `--bytes NUM` → first NUM bytes
+- `-n -K` / `-c -K` → all but the last K lines / bytes (`-c -K` requires
+  K ≤ 2^63−1, otherwise "Value too large")
+- NUM: optional leading whitespace, optional `+`, decimal digits, optional
+  multiplier suffix: `b` 512, `kB` 1000, `K`/`k` 1024, `MB` 1000², `M`/`m` 1024²,
+  then `G`, `T`, `P`, `E`, `Z`, `Y`, `R`, `Q`; `xB` = power of 1000, `xiB` = power
+  of 1024; a suffix alone means 1 (`K` = 1024). Overflow → "Value too large" error
+- Obsolete syntax in the **first** argument only: `-NUM[bcklmqvz]…`
+  (`-5`, `-5c`, `-3q`, `-1k`); digits elsewhere → `invalid trailing option -- 5`
+- Long options may be abbreviated to any unique prefix (`--lin`, `--h`);
+  `--v` / `--ve` are ambiguous (`--verbose` vs `--version`)
 - `-q` / `--quiet` / `--silent` → never print headers
 - `-v` / `--verbose` → always print headers
 - `-z` / `--zero-terminated` → line delimiter is NUL, not newline
 - Short options may be clustered (`-qz`, `-qn5`); `--` ends option parsing
-- Options and FILE operands may be interleaved (`head-toto a.txt -n 3`)
+- Options and FILE operands may be interleaved (`head-toto a.txt -n 3`), unless
+  `POSIXLY_CORRECT` is set (then the first FILE ends option parsing)
 - FILE `-` (or no FILE) → standard input
 - Last `-n`/`-c` wins; last `-q`/`-v` wins
-- NUM is plain unsigned decimal; values beyond `UINTMAX_MAX` clamp to `UINTMAX_MAX`
+- After `-n K` on a regular file, the file offset is left just after the last
+  printed line (`{ head-toto -n 1; cat; } < FILE` works as with GNU)
 - Unreadable FILE → diagnostic on stderr, continue with remaining FILEs, exit 1
-- CLI flag strings live in `head_toto_cli.h` (`HEAD_TOTO_ARG_*`); `scan_meta_flags()`
-  and the option parser use `argv_has_exact()` / macro comparisons only
+- CLI flag strings live in `head_toto_cli.h` (`HEAD_TOTO_ARG_*`); the option
+  parser compares against those macros only
 
 **Do not add:**
 
 - Interactive or TUI modes
 - Follow / tail-like behaviour
-- Negative "all but the last" counts (`-n -K`, `-c -K`) — rejected as invalid numbers
-- Multiplier suffixes on NUM (`K`, `M`, `b`, `KiB`, …) — rejected as invalid numbers
-- Obsolete `-NUM` syntax (`head-toto -5`) — rejected as an invalid option
+- GNU's hidden `---presume-input-pipe` option
 - Logging or debug output in normal operation
-- Single-dash `-h` as help (only `--help`, `--h`, `--version`, and `--v` are meta flags;
-  `-v` is **verbose**, as in GNU `head`)
+- Single-dash `-h` as help (`-h` is an invalid option, as in GNU `head`;
+  `-v` is **verbose**)
 - Any feature that would break GNU `head` behavioural compatibility for the supported options
+
+**Remaining differences from GNU `head`** (deliberate):
+
+- Program name `head-toto`; `--version` prints `head-toto <version>` only;
+  `--help` text is head-toto's own
+- Write failures are always reported as `error writing 'standard output'`
+  (GNU buffers stdout and reports small-output failures as `write error`)
+- `<reason>` texts come from the platform C library (they differ on Windows)
 
 ## Behavioural Contract
 
@@ -84,20 +111,29 @@ Supporting behaviour:
 | `head-toto A B` | `==> A <==\n…\n==> B <==\n…` | `0` |
 | `head-toto -q A B` | contents of A then B, no headers | `0` |
 | `head-toto -v A` | `==> A <==\n…` | `0` |
+| `head-toto -n -2 FILE` | all lines of FILE except the last 2 | `0` |
+| `head-toto -c -3 FILE` | all bytes of FILE except the last 3 | `0` |
+| `head-toto -c 1K FILE` | first 1024 bytes of FILE | `0` |
+| `head-toto -5 FILE` | first 5 lines of FILE (obsolete syntax) | `0` |
 | `head-toto` / `head-toto -` | first 10 lines of stdin | `0` |
-| `head-toto --version` / `--v` | prints `head-toto <version>\n` | `0` |
+| `head-toto --version` / `--vers` | prints `head-toto <version>\n` | `0` |
 | `head-toto --help` / `--h` | prints usage on stdout | `0` |
 | `head-toto missing A` | stderr: `head-toto: cannot open 'missing' for reading: <reason>`; A still printed | `1` |
 | `head-toto DIR` | stderr: `head-toto: error reading 'DIR': <reason>` | `1` |
 | `head-toto -n abc` | stderr: `head-toto: invalid number of lines: 'abc'` | `1` |
 | `head-toto -c abc` | stderr: `head-toto: invalid number of bytes: 'abc'` | `1` |
+| `head-toto -n 99999999999999999999` | stderr: `head-toto: invalid number of lines: '99999999999999999999': Value too large for defined data type` | `1` |
 | `head-toto -x` | stderr: `head-toto: invalid option -- 'x'` + hint | `1` |
+| `head-toto a.txt -5` | stderr: `head-toto: invalid trailing option -- 5` + hint | `1` |
 | `head-toto --foo` | stderr: `head-toto: unrecognized option '--foo'` + hint | `1` |
+| `head-toto --v` | stderr: `head-toto: option '--v' is ambiguous; possibilities: '--verbose' '--version'` + hint | `1` |
+| `head-toto --quiet=x` | stderr: `head-toto: option '--quiet' doesn't allow an argument` + hint | `1` |
 | `head-toto -n` | stderr: `head-toto: option requires an argument -- 'n'` + hint | `1` |
-| Write failure | stderr: `head-toto: write: <reason>` | `1` |
+| Write failure | stderr: `head-toto: error writing 'standard output': <reason>` | `1` |
 
-`--help` anywhere in `argv` (before `--`) wins over `--version`.
-Usage errors are detected before any input is read or output is written.
+Options are processed left to right: `--version --help` prints the version,
+`-x --help` reports the invalid option. Usage errors are detected before any
+input is read or output is written.
 
 ## Exit Codes
 
@@ -112,7 +148,7 @@ Usage errors are detected before any input is read or output is written.
 build/     — head-toto (+ .o); build/tests/test_core; .gitkeep markers
 include/   — head_toto.h + head_toto_{emit,cli,count,io}.h
 src/       — main.c + head_toto_{emit,cli,count,io,run}.c
-tests/     — test_runner.c + test_{count,copy}_*.c / .h → binary build/tests/test_core
+tests/     — test_runner.c + test_{count,copy,elide}_*.c / .h → binary build/tests/test_core
 ```
 
 See `implementation.mdc`, `toolchain-structure.mdc`, and `testing.mdc` for detail.

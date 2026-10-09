@@ -11,8 +11,10 @@ alwaysApply: false
 The Makefile `test` target builds and runs **`build/tests/test_core`** (or
 `build/tests/test_core.exe` on Windows).
 
-Tests cover **NUM parsing** (`head_toto_parse_count()`) and the **copy loops**
-(`head_toto_copy_lines()`, `head_toto_copy_bytes()`) using fixture files.
+Tests cover **NUM parsing** (`head_toto_parse_count()`), the **copy loops**
+(`head_toto_copy_lines()`, `head_toto_copy_bytes()`) and the **elide loops**
+(`head_toto_elide_lines()` / `_bytes()` and their `_stream()` variants) using
+fixture files.
 They do **not** exercise `main()`, the option parser, header output on real
 stdout, or write-failure exits. There are **no** subprocess / integration
 tests in-tree.
@@ -25,11 +27,14 @@ Under **`HEAD_TOTO_WIN32_IO`**, fixtures are opened with `_O_BINARY`.
 | File | Role |
 |------|------|
 | `tests/test_runner.c` | `main()` — invokes all suites in fixed order |
-| `tests/test_count_parse.c` / `.h` | `head_toto_parse_count()` valid, invalid, and overflow inputs |
+| `tests/test_count_parse.c` / `.h` | `head_toto_parse_count()` valid, suffixed, invalid, and overflow inputs |
 | `tests/test_copy_lines.c` / `.h` | `head_toto_copy_lines()` with `\n` and `\0` delimiters |
 | `tests/test_copy_bytes.c` / `.h` | `head_toto_copy_bytes()` short, exact, and over-length counts |
+| `tests/test_elide_lines.c` / `.h` | `head_toto_elide_lines()` (seekable) and `_lines_stream()` give the same output |
+| `tests/test_elide_bytes.c` / `.h` | `head_toto_elide_bytes()` (seekable) and `_bytes_stream()` give the same output |
 
-Order in `test_runner.c`: count_parse → copy_lines → copy_bytes.
+Order in `test_runner.c`: count_parse → copy_lines → copy_bytes → elide_lines →
+elide_bytes.
 
 One scenario per `.c` / `.h` pair; headers declare `void test_<name>_run(void)`.
 
@@ -74,9 +79,12 @@ the repo root so fixture paths under `build/tests/` resolve.
 
 ## Required cases
 
-1. **Count parsing:** `"0"` → 0, `"10"` → 10, `"007"` → 7;
-   `""`, `"-5"`, `"+5"`, `" 5"`, `"5K"`, `"abc"` → `HEAD_TOTO_COUNT_INVALID`
-   with `*out` untouched; a 40-digit string → `OK` and `UINTMAX_MAX`.
+1. **Count parsing:** `"0"` → 0, `"10"` → 10, `"007"` → 7, `" 5"` → 5,
+   `"+5"` → 5, `"5K"` → 5120, `"K"` → 1024, `"1KB"` → 1000, `"1KiB"` → 1024,
+   `"2b"` → 1024, `"1MB"` → 1000000;
+   `""`, `" "`, `"-5"`, `"+K"`, `"5X"`, `"1Ki"`, `"1bB"`, `"5 "`, `"abc"` →
+   `HEAD_TOTO_COUNT_INVALID` with `*out` untouched; a 40-digit string and
+   `"20E"` → `HEAD_TOTO_COUNT_OVERFLOW`.
 2. **Lines, fewer than N:** 3-line input, `n = 10` → output equals input.
 3. **Lines, more than N:** 15-line input, `n = 10` → exactly the first 10 lines.
 4. **Lines, no trailing newline:** `"a\nb"` with `n = 2` → `"a\nb"` (nothing appended).
@@ -86,7 +94,12 @@ the repo root so fixture paths under `build/tests/` resolve.
    boundaries → correct prefix.
 8. **Bytes:** `n` smaller than, equal to, and larger than input size; `n = 0` → empty.
 9. **Bytes, CRLF:** `"a\r\nb\r\n"` with `n = 3` → `"a\r\n"` (verifies binary mode on Windows).
-10. Never call `exit()` from a test; use `assert()` or `return` only.
+10. **Elide lines** (both variants, same expected output): `k = 0` → whole
+    input; `k` larger than the line count → empty; `"x\ny\nz"` with `k = 1` →
+    `"x\ny\n"`; `\0` delimiter; lines spanning `HEAD_TOTO_BUFSIZE` boundaries.
+11. **Elide bytes** (both variants): `k = 0`, `k` below / equal to / above the
+    input size; `"a\r\nb\r\n"` with `k = 2` → `"a\r\nb"`.
+12. Never call `exit()` from a test; use `assert()` or `return` only.
 
 ## Adding tests
 
@@ -94,7 +107,8 @@ the repo root so fixture paths under `build/tests/` resolve.
   `test_runner.c`, append to `TEST_SRCS` in `Makefile`.
 - Use `HEAD_TOTO_O_BINARY` (from `head_toto_io.h`) for every fixture `open()`;
   no `#ifdef` branches that skip assertions.
-- Keep tests allocation-free; stack buffers only.
+- Keep tests allocation-free; stack buffers only (the code under test may
+  allocate in the elide stream path).
 
 ## Manual smoke tests (not automated)
 
@@ -113,6 +127,13 @@ seq 5 | ./build/head-toto -n 2 -             # expect: 1, 2 from stdin
 ./build/head-toto --version                  # expect: head-toto <version>, exit 0
 ./build/head-toto --help                     # expect: usage text on stdout, exit 0
 ./build/head-toto -x                         # expect: invalid option + hint, exit 1
+./build/head-toto -n -2 /tmp/n.txt           # expect: 1..18, exit 0
+seq 20 | ./build/head-toto -c -3             # expect: 1..19 (drops "20\n"), exit 0
+./build/head-toto -c 1K /tmp/n.txt           # expect: whole file (51 bytes), exit 0
+./build/head-toto -5 /tmp/n.txt              # expect: 1..5, exit 0
+./build/head-toto --v /tmp/n.txt             # expect: ambiguous option + hint, exit 1
+{ ./build/head-toto -n 2; cat; } < /tmp/n.txt  # expect: 1..20 (offset left after line 2)
 ```
 
-Compare against GNU `head` with `diff <(head …) <(./build/head-toto …)` on Linux.
+Compare against GNU `head` 9.4 with `diff <(head …) <(./build/head-toto …)` on
+Linux (`LC_ALL=C`); stderr differs only in the program name.

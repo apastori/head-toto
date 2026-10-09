@@ -103,11 +103,13 @@ Typical outcomes:
 `src/head_toto_count.c`, `src/head_toto_io.c`, `src/head_toto_run.c`
 
 **Test sources:** `tests/test_runner.c`, `tests/test_count_parse.c`,
-`tests/test_copy_lines.c`, `tests/test_copy_bytes.c`
+`tests/test_copy_lines.c`, `tests/test_copy_bytes.c`,
+`tests/test_elide_lines.c`, `tests/test_elide_bytes.c`
 
 ## Dependencies
 
-- **All builds:** libc only (`unistd.h`, `fcntl.h`, `string.h`, `stdint.h`, `errno.h`, etc.).
+- **All builds:** libc only (`unistd.h`, `fcntl.h`, `sys/stat.h`, `string.h`,
+  `stdint.h`, `stdlib.h`, `errno.h`, etc.).
 - **Windows binary-mode builds:** libc + `<io.h>` (`_setmode`) — still no extra link libraries.
 
 ## Directory layout
@@ -143,7 +145,9 @@ head-toto/
     ├── test_runner.c
     ├── test_count_parse.c / .h
     ├── test_copy_lines.c / .h
-    └── test_copy_bytes.c / .h
+    ├── test_copy_bytes.c / .h
+    ├── test_elide_lines.c / .h
+    └── test_elide_bytes.c / .h
 ```
 
 Build artefacts under `build/` (except `.gitkeep` files) are gitignored.

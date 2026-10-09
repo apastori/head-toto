@@ -10,9 +10,12 @@ Keep `README.md` user-focused. Align with `project-overview.mdc` and `implementa
 
 ## Required sections (order)
 
-1. **Title & description** — GNU `head`-compatible; prints the first 10 lines
-   (or `-n NUM` lines / `-c NUM` bytes) of each FILE to stdout; reads stdin when
-   no FILE or `-`; raw `read(2)` / `write(2)` copy loop with no heap allocation.
+1. **Title & description** — GNU `head`-compatible (GNU coreutils `head` 9.4);
+   prints the first 10 lines (or `-n NUM` lines / `-c NUM` bytes, or all but
+   the last NUM with `-NUM`) of each FILE to stdout; reads stdin when no FILE
+   or `-`; raw `read(2)` / `write(2)` copy loop, heap used only to hold back
+   the tail of a pipe for negative counts.
+   - **Versions** note: v1.0.0 (tag) = POSIX-style subset; v2.0.0 = GNU-compatible.
 
 2. **Build**
    - `make`, `make debug`, `make test`, `make clean`, optional `make install`
@@ -26,27 +29,34 @@ Keep `README.md` user-focused. Align with `project-overview.mdc` and `implementa
 3. **Usage**
    - Show invocations as `./build/head-toto` (or installed `head-toto`)
    - Synopsis: `head-toto [OPTION]... [FILE]...`
-   - Options table: `-n` / `--lines`, `-c` / `--bytes`, `-q` / `--quiet` / `--silent`,
-     `-v` / `--verbose`, `-z` / `--zero-terminated`, `--help` / `--h`, `--version` / `--v`
+   - Options table: `-n` / `--lines=[-]NUM`, `-c` / `--bytes=[-]NUM`,
+     `-q` / `--quiet` / `--silent`, `-v` / `--verbose`, `-z` / `--zero-terminated`,
+     `--help`, `--version`
+   - NUM syntax: optional `+`, digits, multiplier suffix table; leading `-` =
+     all but the last NUM; obsolete `-NUM` form (first argument only)
    - Default is 10 lines; last `-n` / `-c` wins; `-` means stdin
    - Headers `==> NAME <==` shown for multiple FILEs unless `-q`; forced with `-v`
-   - `-v` is verbose (not version); help anywhere in argv wins over version
-   - Examples: single file, multiple files, `-c`, pipe from stdin
-   - **Differences from GNU `head`:** no negative counts (`-n -K`), no size
-     suffixes (`K`, `M`, …), no obsolete `-NUM` syntax, no long-option abbreviations
+   - `-v` is verbose (not version); long options may be abbreviated (`--v` is
+     ambiguous); options are processed in order (first `--help` / `--version` wins)
+   - Examples: single file, multiple files, `-c`, `-n -K`, a suffix, `-NUM`,
+     pipe from stdin
+   - **Differences from GNU `head`:** only the remaining deliberate ones listed in
+     `project-overview.mdc` (program name / `--version` / `--help` text, write
+     error wording, platform `<reason>` texts, no `---presume-input-pipe`)
 
 4. **Exit codes**
    - `0`: success — every FILE copied (or `--help` / `--version`)
    - `1`: error — usage error, any FILE failed to open/read, or write failure
    - Unreadable FILEs are reported on stderr and the remaining FILEs are still processed
    - stderr: `head-toto: cannot open '<file>' for reading: <reason>`,
-     `head-toto: error reading '<file>': <reason>`, `head-toto: write: <reason>`
+     `head-toto: error reading '<file>': <reason>`,
+     `head-toto: error writing 'standard output': <reason>`
 
 5. **Layout** — brief tree matching actual repo (include `LICENSE.txt`,
    `c_version.txt`, `build/.gitkeep`, `build/tests/.gitkeep`):
    - `include/head_toto.h` + `head_toto_{emit,cli,count,io}.h`
    - `src/main.c` + `head_toto_{emit,cli,count,io,run}.c`
-   - `tests/test_runner.c` + `test_{count,copy}_*.c` → `build/tests/test_core`
+   - `tests/test_runner.c` + `test_{count,copy,elide}_*.c` → `build/tests/test_core`
    - Note that unit tests run on both Linux and Windows builds (no `SKIP:`)
 
 ## Do not document in README
@@ -54,7 +64,7 @@ Keep `README.md` user-focused. Align with `project-overview.mdc` and `implementa
 - Internal chain-of-thought comment blocks
 - `-Werror` flag rationale (lives in `Makefile` comments)
 - Author/licence banners on `--version` (binary prints `head-toto <version>` only)
-- `argv_has_exact()`, `try_write_all()`, `try_read()`, or other static helper
+- `parse_long()`, `try_write_all()`, `try_read()`, or other static helper
   names unless briefly needed for contributors
 
 ## Style

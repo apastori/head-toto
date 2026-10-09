@@ -11,15 +11,15 @@ alwaysApply: false
 | Path | Role |
 |------|------|
 | `include/head_toto.h` | `HEAD_TOTO_VERSION_STRING`, `HEAD_TOTO_EXIT_*` enum, `HEAD_TOTO_DEFAULT_COUNT` (10), `struct head_toto_opts`, `head_toto_run()` declaration |
-| `include/head_toto_emit.h` | `head_toto_emit_error()`, `head_toto_emit_open_error()`, `head_toto_emit_read_error()`, `head_toto_emit_invalid_count()`, `head_toto_emit_invalid_option()`, `head_toto_emit_unrecognized_option()`, `head_toto_emit_missing_arg_short()`, `head_toto_emit_missing_arg_long()` |
-| `include/head_toto_cli.h` | `HEAD_TOTO_ARG_*` flag macros, `scan_meta_flags()`, `head_toto_parse_args()`, `print_help()`, `print_version()` |
-| `include/head_toto_count.h` | `HEAD_TOTO_COUNT_*` result enum, `head_toto_parse_count()` |
-| `include/head_toto_io.h` | `HEAD_TOTO_BUFSIZE`, `HEAD_TOTO_O_BINARY`, `head_toto_copy_lines()`, `head_toto_copy_bytes()`, `head_toto_write_header()` |
-| `src/main.c` | `main()` only — meta-flag scan, dispatch help/version, parse args, call `head_toto_run()` |
+| `include/head_toto_emit.h` | `head_toto_emit_error()`, `head_toto_emit_open_error()`, `head_toto_emit_read_error()`, `head_toto_emit_write_error()`, `head_toto_emit_invalid_count()`, `head_toto_emit_count_overflow()`, `head_toto_emit_invalid_option()`, `head_toto_emit_invalid_trailing_option()`, `head_toto_emit_unrecognized_option()`, `head_toto_emit_ambiguous_option()`, `head_toto_emit_arg_not_allowed()`, `head_toto_emit_missing_arg_short()`, `head_toto_emit_missing_arg_long()`, `head_toto_emit_memory_exhausted()` |
+| `include/head_toto_cli.h` | `HEAD_TOTO_ARG_*` flag macros, `enum head_toto_parse_result`, `head_toto_parse_args()`, `print_help()`, `print_version()` |
+| `include/head_toto_count.h` | `HEAD_TOTO_COUNT_*` result enum (`OK`, `INVALID`, `OVERFLOW`), `head_toto_parse_count()` |
+| `include/head_toto_io.h` | `HEAD_TOTO_BUFSIZE`, `HEAD_TOTO_O_BINARY`, `head_toto_copy_lines()`, `head_toto_copy_bytes()`, `head_toto_elide_lines()`, `head_toto_elide_bytes()`, `head_toto_elide_lines_stream()`, `head_toto_elide_bytes_stream()`, `head_toto_write_header()` |
+| `src/main.c` | `main()` only — parse args, dispatch help/version/error, call `head_toto_run()` |
 | `src/head_toto_emit.c` | stderr diagnostics |
-| `src/head_toto_cli.c` | `argv_has_exact()`, meta-flag scan, option parser, help/version text |
-| `src/head_toto_count.c` | `head_toto_parse_count()` — NUM string → `uintmax_t` |
-| `src/head_toto_io.c` | `try_write_all()`, `try_read()`, copy loops, header writer |
+| `src/head_toto_cli.c` | option parser (long-option table, obsolete syntax), help/version text |
+| `src/head_toto_count.c` | `head_toto_parse_count()` — NUM string (with suffix) → `uintmax_t` |
+| `src/head_toto_io.c` | `try_write_all()`, `try_read()`, copy loops, elide loops, header writer |
 | `src/head_toto_run.c` | `head_toto_run()` — iterate FILE operands, open/close, header policy, exit status |
 
 Each `.c` file opens with a **chain-of-thought comment block** (responsibility,
@@ -28,7 +28,8 @@ syscalls, heap usage, C standard). Preserve that pattern when adding files.
 ## C standard
 
 **ISO C11** (`-std=c11`), `-D_POSIX_C_SOURCE=200809L` for POSIX.1-2008 where
-available (`open`, `read`, `write`, `close`, `STDIN_FILENO`, `ssize_t`, etc.).
+available (`open`, `read`, `write`, `close`, `lseek`, `fstat`, `STDIN_FILENO`,
+`ssize_t`, `off_t`, etc.).
 
 Platform selection is via Makefile define **`HEAD_TOTO_WIN32_IO`**
 (set when a compile probe for `<io.h>` + `_O_BINARY` succeeds).
@@ -45,6 +46,7 @@ struct head_toto_opts {
     uintmax_t              count;    /* default HEAD_TOTO_DEFAULT_COUNT */
     enum head_toto_headers headers;  /* default AUTO */
     char                   delim;    /* '\n', or '\0' with -z */
+    int                    elide;    /* 1: all but the last count units */
 };
 ```
 
@@ -52,8 +54,8 @@ struct head_toto_opts {
 
 Flag macros in `head_toto_cli.h`:
 
-- `HEAD_TOTO_ARG_HELP` / `HEAD_TOTO_ARG_HELP_SHORT` → `--help` / `--h`
-- `HEAD_TOTO_ARG_VERSION` / `HEAD_TOTO_ARG_VERSION_SHORT` → `--version` / `--v`
+- `HEAD_TOTO_ARG_HELP` → `--help`
+- `HEAD_TOTO_ARG_VERSION` → `--version`
 - `HEAD_TOTO_ARG_LINES_SHORT` / `HEAD_TOTO_ARG_LINES_LONG` → `-n` / `--lines`
 - `HEAD_TOTO_ARG_BYTES_SHORT` / `HEAD_TOTO_ARG_BYTES_LONG` → `-c` / `--bytes`
 - `HEAD_TOTO_ARG_QUIET_SHORT` / `HEAD_TOTO_ARG_QUIET_LONG` / `HEAD_TOTO_ARG_SILENT_LONG` → `-q` / `--quiet` / `--silent`
@@ -62,30 +64,51 @@ Flag macros in `head_toto_cli.h`:
 - `HEAD_TOTO_ARG_END_OF_OPTS` → `--`
 - `HEAD_TOTO_ARG_STDIN` → `-`
 
-`scan_meta_flags()` uses static **`argv_has_exact()`** (no hardcoded strings in the scan logic).
+```c
+enum head_toto_parse_result {
+    HEAD_TOTO_PARSE_RUN, HEAD_TOTO_PARSE_HELP,
+    HEAD_TOTO_PARSE_VERSION, HEAD_TOTO_PARSE_ERROR
+};
+```
 
-1. Scan `argv[1…]` up to the first `--` for help flags → help + exit 0 (**wins** over version).
-2. Else scan for version flags → `head-toto <version>\n` + exit 0.
-3. Else `head_toto_parse_args(argc, argv, &opts, &nfiles)`; on usage error → exit 1
-   (diagnostic already emitted, nothing written to stdout).
-4. Else → `return head_toto_run(&opts, nfiles, argv + 1);`
+1. `head_toto_parse_args(argc, argv, &opts, &nfiles)` — one left-to-right pass.
+2. `HELP` → print help, exit 0. `VERSION` → `head-toto <version>\n`, exit 0.
+3. `ERROR` → exit 1 (diagnostic already emitted, nothing written to stdout).
+4. `RUN` → `return head_toto_run(&opts, nfiles, argv + 1);`
 
 ### `head_toto_parse_args()` rules
 
-- Walk `argv[1…]` left to right. Operands (anything not starting with `-`, plus
-  bare `-`) are **compacted in place** into `argv[1 … nfiles]`, preserving order.
-- After `--`, every remaining argument is an operand.
-- Long options: exact match only (no abbreviation). `--lines=NUM` / `--bytes=NUM`
-  take the value after `=`; `--lines` / `--bytes` take the next `argv` element.
-  `--quiet`, `--silent`, `--verbose`, `--zero-terminated` take no value.
-- Short options may be clustered. `q`, `v`, `z` are flags; `n` and `c` consume the
-  rest of the token (`-n5`, `-qn5`) or, if empty, the next `argv` element.
-- `-n` / `-c` set `mode` and `count` via `head_toto_parse_count()`; last one wins.
+- **Obsolete syntax first:** if `argv[1]` is `-` followed by a digit, parse it as
+  `-DIGITS[letters]`. Letters: `c` → bytes (clears any multiplier), `b`/`k`/`m` →
+  bytes with that multiplier, `l` → lines, `q` / `v` / `z` → as the short flags;
+  any other letter → `head_toto_emit_invalid_trailing_option(c)`. The multiplier
+  is written back after the digits in `argv[1]` (in place) and the result goes
+  through `head_toto_parse_count()`; `argv[1]` is then skipped.
+- Walk the remaining `argv` left to right. Operands (anything not starting with
+  `-`, plus bare `-`) are **compacted in place** into `argv[1 … nfiles]`,
+  preserving order. After `--`, every remaining argument is an operand. If
+  `POSIXLY_CORRECT` is set (`getenv`), the first operand also ends option parsing.
+- **Long options** come from a static table in GNU order: bytes, lines, quiet,
+  silent, verbose, zero-terminated, help, version. The name is the text before
+  any `=`. An exact match wins; otherwise a unique prefix match is accepted;
+  several prefix matches → `head_toto_emit_ambiguous_option()` (arg as typed,
+  then every candidate in table order); none → `_unrecognized_option(arg)`.
+  `--lines` / `--bytes` take the value after `=` or the next `argv` element
+  (whatever it is); the others reject `=VALUE` with `_arg_not_allowed(name)`
+  (full option name).
+- `--help` / `--version` return `HELP` / `VERSION` **as soon as they are reached**.
+- **Short options** may be clustered. `q`, `v`, `z` are flags; `n` and `c` consume
+  the rest of the token (`-n5`, `-qn5`) or, if empty, the next `argv` element.
+  A digit → `_invalid_trailing_option(c)`; any other unknown char →
+  `_invalid_option(c)`.
+- **NUM values of `-n` / `-c`:** a leading `-` sets `elide = 1` (else `elide = 0`)
+  and is removed; the rest goes through `head_toto_parse_count()`. `INVALID` →
+  `_invalid_count(what, rest)`; `OVERFLOW` → `_count_overflow(what, rest)`.
+  Each value is checked when it is reached; last `-n` / `-c` wins.
 - `-q` sets `headers = NEVER`, `-v` sets `headers = ALWAYS`; last one wins.
-- Missing value → `head_toto_emit_missing_arg_short(c)` or `_long(name)`.
-- Unknown short char → `head_toto_emit_invalid_option(c)`.
-- Unknown `--xxx` → `head_toto_emit_unrecognized_option(arg)`.
-- A token like `-5` is an invalid option (`'5'`), not the obsolete count syntax.
+- Missing value → `_missing_arg_short(c)` or `_missing_arg_long(name)`.
+- **After the loop:** bytes mode with `elide` and `count > INTMAX_MAX` →
+  `_count_overflow("bytes", <count in decimal>)` (GNU's `OFF_T_MAX` limit).
 
 Usage error formats (both lines to **stderr**):
 
@@ -93,7 +116,16 @@ Usage error formats (both lines to **stderr**):
 head-toto: invalid option -- 'x'
 Try 'head-toto --help' for more information.
 
+head-toto: invalid trailing option -- 5
+Try 'head-toto --help' for more information.
+
 head-toto: unrecognized option '--foo'
+Try 'head-toto --help' for more information.
+
+head-toto: option '--v' is ambiguous; possibilities: '--verbose' '--version'
+Try 'head-toto --help' for more information.
+
+head-toto: option '--quiet' doesn't allow an argument
 Try 'head-toto --help' for more information.
 
 head-toto: option requires an argument -- 'n'
@@ -106,16 +138,28 @@ Try 'head-toto --help' for more information.
 ## Count parsing (`head_toto_parse_count`)
 
 ```c
-enum head_toto_count_result { HEAD_TOTO_COUNT_OK, HEAD_TOTO_COUNT_INVALID };
+enum head_toto_count_result {
+    HEAD_TOTO_COUNT_OK, HEAD_TOTO_COUNT_INVALID, HEAD_TOTO_COUNT_OVERFLOW
+};
 enum head_toto_count_result head_toto_parse_count(const char *s, uintmax_t *out);
 ```
 
+Same rules as GNU `xstrtoumax` with head's suffix set `bkKmMGTPEZYRQ`:
+
 - **Precondition:** `s != NULL`, `out != NULL`.
-- Accept one or more ASCII digits `0-9` only. Empty string, leading `+`/`-`,
-  whitespace, or any suffix → `HEAD_TOTO_COUNT_INVALID` (`*out` untouched).
-- Overflow past `UINTMAX_MAX` → clamp to `UINTMAX_MAX`, return `OK`
-  (matches GNU treating huge counts as "everything").
-- Caller emits `head-toto: invalid number of lines: '<arg>'` (or `bytes`).
+- Skip leading whitespace (`' '`, `\t`, `\n`, `\v`, `\f`, `\r`); a `-` there →
+  `INVALID`; then one optional `+`; then decimal digits.
+- No digits: if `s[0]` itself is a suffix letter the value is 1 (`"K"` → 1024),
+  otherwise `INVALID` (`""`, `" "`, `" K"`, `"+K"`).
+- Suffix: `b` = 512; `k`/`K` = base¹, `m`/`M` = base², `G` ³, `T` ⁴, `P` ⁵,
+  `E` ⁶, `Z` ⁷, `Y` ⁸, `R` ⁹, `Q` ¹⁰ with base 1024. For the letter suffixes
+  (not `b`) a following `B` or `D` switches to base 1000, `iB` keeps 1024.
+  Anything left over (`"1Ki"`, `"1bB"`, `"5 "`) → `INVALID`.
+- Overflow (in the digits or the scaling) → `OVERFLOW`, unless the suffix is
+  invalid (then `INVALID`).
+- `*out`: value on `OK`, `UINTMAX_MAX` on `OVERFLOW`, untouched on `INVALID`.
+- Caller emits `head-toto: invalid number of lines: '<arg>'` (or `bytes`), plus
+  `: <strerror(EOVERFLOW)>` for `OVERFLOW`.
 
 ## File loop (`head_toto_run`)
 
@@ -127,8 +171,12 @@ for each name:
     fd = (name is "-") ? STDIN_FILENO : open(name, O_RDONLY | HEAD_TOTO_O_BINARY)
     if fd < 0 → emit_open_error(name), status = EXIT_ERR, continue
     if print_headers → head_toto_write_header(display(name), first); first = 0
-    rc = (mode == LINES) ? copy_lines(fd, STDOUT_FILENO, count, delim)
-                         : copy_bytes(fd, STDOUT_FILENO, count)
+    if elide:
+        rc = (mode == LINES) ? elide_lines(fd, STDOUT_FILENO, count, delim)
+                             : elide_bytes(fd, STDOUT_FILENO, count)
+    else if count > 0:
+        rc = (mode == LINES) ? copy_lines(fd, STDOUT_FILENO, count, delim)
+                             : copy_bytes(fd, STDOUT_FILENO, count)
     if rc != 0 → emit_read_error(name), status = EXIT_ERR
     if fd != STDIN_FILENO → close(fd)
 return status
@@ -136,7 +184,8 @@ return status
 
 - `display(name)` is `"standard input"` for `-`, otherwise `name` verbatim.
 - A FILE that fails to open prints **no header** and does not clear `first`.
-- `count == 0` still opens the FILE (errors are reported) but never calls `read()`.
+- `count == 0` (without `elide`) still opens the FILE (errors are reported) but
+  never calls `read()`.
 - On Linux, opening a directory succeeds and the first `read()` fails with
   `EISDIR` → `error reading` path; do not special-case directories.
 
@@ -156,8 +205,44 @@ int head_toto_copy_bytes(int fd_in, int fd_out, uintmax_t n);
   per delimiter; when `n` hits 0, write the chunk prefix through that delimiter
   and stop. Otherwise write the whole chunk and keep reading.
 - A final line without a trailing delimiter is copied as-is; never append one.
-- Do not read past the needed data more than one buffer's worth; never `lseek()`
-  back (stdin may be a pipe).
+- Do not read past the needed data more than one buffer's worth. When lines
+  mode stops with unwritten bytes in the buffer and `fd_in` is a **regular
+  file** (`fstat` + `S_ISREG`), `lseek(fd_in, -extra, SEEK_CUR)` so the offset
+  sits just after the last printed line (as GNU does). Never `lseek()` pipes.
+
+## Elide loops (`-n -K`, `-c -K`)
+
+```c
+int head_toto_elide_lines(int fd_in, int fd_out, uintmax_t k, char delim);
+int head_toto_elide_bytes(int fd_in, int fd_out, uintmax_t k);
+int head_toto_elide_lines_stream(int fd_in, int fd_out, uintmax_t k, char delim);
+int head_toto_elide_bytes_stream(int fd_in, int fd_out, uintmax_t k);
+```
+
+- Copy everything **except** the last `k` lines / bytes. Same return contract
+  as the copy loops. `k == 0` copies everything.
+- A final line without a delimiter counts as a line (`"x\ny\nz"`, `k = 1` →
+  `"x\ny\n"`).
+- `head_toto_elide_*()` dispatch: `fstat` says regular file **and**
+  `lseek(fd, 0, SEEK_CUR)` succeeds → **seekable path**; otherwise (pipes,
+  terminals, directories, `fstat` failure) → `_stream()` variant.
+- **Seekable path** (stack buffer only): bytes → copy `size − pos − k` bytes
+  (nothing if ≤ 0); lines → read backwards from the end in `HEAD_TOTO_BUFSIZE`
+  blocks to find the cut point (the `k`-th delimiter from the end, or the
+  `(k+1)`-th when the file ends with a delimiter), `lseek` back to `pos`, then
+  `head_toto_copy_bytes()` up to the cut. The offset ends just after the
+  printed data, as with GNU.
+- **Stream path** (heap): a hold-back buffer `{data, start, len, cap}`; read
+  into `data + len`, write everything beyond the last `k` bytes (or beyond the
+  last `k` delimiters) and advance `start`. Before a read, if fewer than
+  `HEAD_TOTO_BUFSIZE` bytes are free, `memmove` the held data to the front;
+  if free space is still below `max(HEAD_TOTO_BUFSIZE, cap / 2)`, double `cap`
+  with `realloc`. This keeps the cost linear and allocates only as data
+  arrives. Allocation failure (or `cap` overflow) →
+  `head_toto_emit_memory_exhausted()` + `exit(HEAD_TOTO_EXIT_ERR)`.
+  Free the buffer on every return path.
+- The `_stream()` variants are public so unit tests can run both paths on the
+  same fixture file.
 
 ## Headers (`head_toto_write_header`)
 
@@ -208,8 +293,11 @@ All diagnostics on **stderr**:
 - System error: `head-toto: <context>: <strerror(errno)>` (`head_toto_emit_error`)
 - Open failure: `head-toto: cannot open '<name>' for reading: <strerror(errno)>`
 - Read failure: `head-toto: error reading '<name>': <strerror(errno)>`
+- Write failure: `head-toto: error writing 'standard output': <strerror(errno)>`
 - Bad NUM: `head-toto: invalid number of lines: '<arg>'` /
   `head-toto: invalid number of bytes: '<arg>'` (no hint line)
+- NUM too large: the same line followed by `: <strerror(EOVERFLOW)>`
+- Allocation failure: `head-toto: memory exhausted`
 - Option errors: see formats above, each followed by the hint line
 
 `<name>` uses the display name (`standard input` for `-`).
@@ -223,7 +311,7 @@ Static helper in `head_toto_io.c`:
 - **Postcondition:** all `len` bytes written, or process exited
 - Loops on short writes, advancing the pointer by the returned byte count
 - On `EINTR`: retry immediately
-- On other errors: `head_toto_emit_error("write")`, `exit(HEAD_TOTO_EXIT_ERR)`
+- On other errors: `head_toto_emit_write_error()`, `exit(HEAD_TOTO_EXIT_ERR)`
 
 ## `try_read()` contract
 

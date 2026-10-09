@@ -23,8 +23,8 @@ alwaysApply: false
 
 ## Module conventions
 
-- **`src/main.c`** stays thin — meta-flag scan, dispatch to help/version,
-  call `head_toto_parse_args()`, call `head_toto_run()`, and exit.
+- **`src/main.c`** stays thin — call `head_toto_parse_args()`, dispatch
+  help/version/error with plain `if`s, call `head_toto_run()`, and exit.
   No file I/O, no counting logic, no header formatting.
 - **`include/head_toto.h`** — version string, exit code enum, options struct,
   and `head_toto_run()` declaration.
@@ -39,7 +39,7 @@ alwaysApply: false
 
 | Kind | Style | Examples |
 |------|-------|----------|
-| Functions | `snake_case` | `head_toto_run`, `head_toto_copy_lines`, `argv_has_exact`, `print_help` |
+| Functions | `snake_case` | `head_toto_run`, `head_toto_copy_lines`, `parse_long`, `print_help` |
 | Macros / constants | `UPPER_SNAKE_CASE` | `HEAD_TOTO_VERSION_STRING`, `HEAD_TOTO_ARG_HELP`, `HEAD_TOTO_BUFSIZE` |
 | Headers | `HEAD_TOTO_*_H` guards | `HEAD_TOTO_H`, `HEAD_TOTO_CLI_H`, `HEAD_TOTO_IO_H` |
 
@@ -51,13 +51,16 @@ Public API prefix: **`head_toto_`** for module entry points.
   (`HEAD_TOTO_BUFSIZE` = 8192); reused for every `read()`.
 - **Operands:** compacted in place inside `argv`; no copied list of file names.
 - **Counts:** `uintmax_t` from `<stdint.h>`; never `int` for NUM.
-- No heap allocation (`malloc`/`calloc`/`realloc`/`strdup`) anywhere in the
-  program — normal or error path.
+- **Heap:** only in the elide **stream** path of `head_toto_io.c`
+  (`head_toto_elide_*_stream()`): one `malloc`/`realloc` hold-back buffer,
+  grown only as input arrives, freed on every return path. Allocation failure →
+  `head_toto_emit_memory_exhausted()` and `exit(HEAD_TOTO_EXIT_ERR)`. No heap
+  anywhere else (`-n K`, `-c K`, parsing, headers, errors).
 
 ## Output rules (`head_toto_io.c`)
 
-- Data is copied with `read()` into the stack buffer and `try_write_all()` to
-  `STDOUT_FILENO` — at most one `try_write_all()` per `read()` chunk.
+- Data is copied with `read()` into a buffer and `try_write_all()` to
+  `STDOUT_FILENO` — one `try_write_all()` per contiguous run of output.
 - Lines mode scans each chunk with `memchr()` for the delimiter (`\n` or `\0`)
   and writes only the prefix up to the N-th delimiter.
 - Headers (`==> NAME <==`) go through `head_toto_write_header()` using
@@ -71,8 +74,11 @@ Public API prefix: **`head_toto_`** for module entry points.
 - **stderr only:** `head-toto: <context>: <strerror(errno)>` for system errors.
 - **stderr only:** `head-toto: cannot open '<file>' for reading: <reason>`.
 - **stderr only:** `head-toto: error reading '<file>': <reason>`.
-- **stderr only:** `head-toto: invalid number of lines|bytes: '<arg>'`.
-- **stderr only:** invalid / unrecognized / missing-argument option message + hint line.
+- **stderr only:** `head-toto: error writing 'standard output': <reason>`.
+- **stderr only:** `head-toto: invalid number of lines|bytes: '<arg>'`
+  (+ `: <strerror(EOVERFLOW)>` when too large).
+- **stderr only:** invalid / invalid trailing / unrecognized / ambiguous /
+  argument-not-allowed / missing-argument option message + hint line.
 - Capture `errno` into a local **before** any other call in emit functions.
 - `-` is displayed as `standard input` in headers and diagnostics.
 - Implemented in `head_toto_emit.c`.
@@ -83,13 +89,14 @@ Public API prefix: **`head_toto_`** for module entry points.
 - Contract comments on non-trivial functions: preconditions, postconditions,
   return value, error behaviour.
 - Comment non-obvious decisions (platform guards, binary mode on Windows,
-  in-place `argv` compaction, `UINTMAX_MAX` clamping, Makefile `_O_BINARY`
-  probe); not obvious code.
+  in-place `argv` compaction, GNU suffix and overflow rules, seek-back on
+  regular files, hold-back buffer growth, Makefile `_O_BINARY` probe); not
+  obvious code.
 
 ## Tests
 
 - Plain `assert()` — no external test framework.
-- One scenario per `tests/test_{count,copy}_*.c`; runner in `tests/test_runner.c`.
+- One scenario per `tests/test_{count,copy,elide}_*.c`; runner in `tests/test_runner.c`.
 - Print `PASS: <name>` on success. Tests run on every platform (no `SKIP`).
 
 ## What not to do
@@ -97,10 +104,12 @@ Public API prefix: **`head_toto_`** for module entry points.
 - Do not compile as C++.
 - Do not link extra libraries beyond **libc**.
 - Do not use `gets`, unbounded `scanf`, or ignore `read()` / `write()` byte counts.
-- Do not use `atoi`, `strtol`, or `strtoumax` for NUM — they accept whitespace
-  and signs; parse digits manually in `head_toto_count.c`.
+- Do not use `atoi`, `strtol`, or `strtoumax` for NUM — their sign, locale and
+  `0x` handling differ from GNU's rules; parse manually in `head_toto_count.c`.
 - Do not use `getopt` / `getopt_long` — option parsing is hand-rolled in
-  `head_toto_cli.c` against the `HEAD_TOTO_ARG_*` macros.
+  `head_toto_cli.c` against the `HEAD_TOTO_ARG_*` macros (GNU error wording,
+  obsolete syntax, and identical behaviour on Windows).
 - Do not use `fwrite` / `fread` for file data — project standard is raw `read()` / `write()`.
 - Do not `close(STDIN_FILENO)`; `-` may appear more than once.
-- Do not `lseek()` or `mmap()` inputs — stdin and pipes must behave like files.
+- `lseek()` / `fstat()` only in `head_toto_io.c`, and `lseek()` only on regular
+  files (seek-back after `-n K`, elide seekable path). Never `mmap()` inputs.
