@@ -62,7 +62,9 @@ LIB_OBJS := $(BUILD_DIR)/head_toto_count.o \
 TEST_SRCS := tests/test_runner.c \
              tests/test_count_parse.c \
              tests/test_copy_lines.c \
-             tests/test_copy_bytes.c
+             tests/test_copy_bytes.c \
+             tests/test_elide_lines.c \
+             tests/test_elide_bytes.c
              
 TEST_OBJS := $(patsubst tests/%.c,$(TEST_BUILD_DIR)/%.o,$(TEST_SRCS))
 TEST_HDRS := $(wildcard tests/*.h)
