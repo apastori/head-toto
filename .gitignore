@@ -84,3 +84,7 @@ gmon.out
 
 # Dependency files (optional, remove if you track them)
 *.d
+
+# Local input files for manually testing head-toto against GNU head
+/file.txt
+/file2.txt
