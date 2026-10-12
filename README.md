@@ -128,6 +128,51 @@ seq 100 | ./build/head-toto -n 5            # from standard input
 - The `<reason>` part of messages comes from the system C library, so it reads
   differently on Windows.
 
+### v1.0.0 syntax
+
+The v1.0.0 option parser accepts a smaller, POSIX-style syntax:
+
+```
+head-toto [OPTION]... [FILE]...
+```
+
+| Form | Meaning |
+|------|---------|
+| `-n NUM`, `-nNUM`, `--lines=NUM`, `--lines NUM` | print the first NUM lines (default 10) |
+| `-c NUM`, `-cNUM`, `--bytes=NUM`, `--bytes NUM` | print the first NUM bytes |
+| `-q`, `--quiet`, `--silent` | never print file name headers |
+| `-v`, `--verbose` | always print file name headers |
+| `-z`, `--zero-terminated` | line delimiter is NUL, not newline |
+| `--help`, `--h` | show help and exit |
+| `--version`, `--v` | show version and exit |
+| `--` | end of options; everything after it is a FILE |
+| `-` | standard input |
+
+- NUM is one or more decimal digits and nothing else: no sign, no spaces, no
+  suffix (`-n -2`, `-n +2`, `-n ' 2'` and `-c 1K` are invalid). Values larger
+  than 18446744073709551615 are treated as "everything".
+- Long options must be spelled in full (`--lin=2` is unrecognized) and only
+  `--lines` / `--bytes` take a value (`--quiet=x` is unrecognized).
+- Short options can be clustered (`-qz`, `-qn5`). `-n` / `-c` take the rest of
+  the cluster as NUM, or the next argument when nothing follows, even if it
+  starts with `-`.
+- `--help` / `--h` anywhere before `--` wins over everything, including usage
+  errors and `--version`; otherwise `--version` / `--v` wins. Only these exact
+  spellings count: `-h` and `-V` are invalid options.
+- Options and FILEs may be mixed in any order (`head-toto a.txt -n 2`).
+- The last `-n` / `-c` wins, and the last `-q` / `-v` wins.
+- `-NUM` is not supported (`-5` is an invalid option).
+
+Typical usage errors:
+
+```
+head-toto: invalid number of lines: '-2'
+head-toto: invalid option -- '5'
+head-toto: unrecognized option '--lin=2'
+head-toto: option requires an argument -- 'n'
+head-toto: option '--lines' requires an argument
+```
+
 ## Exit codes
 
 | Code | Meaning |
